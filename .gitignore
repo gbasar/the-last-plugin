@@ -1,0 +1,5 @@
+# test scratch
+*.test
+.DS_Store
+# a copy of github.com/Ar9av/obsidian-wiki, for reference only
+obsidian-wiki/

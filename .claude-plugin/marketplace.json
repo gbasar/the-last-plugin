@@ -1,0 +1,16 @@
+{
+  "name": "the-last-plugin",
+  "owner": { "name": "the-last-plugin" },
+  "plugins": [
+    {
+      "name": "the-last-plugin",
+      "source": "./agents/claude-code",
+      "description": "lplug: one dispatcher for every hook event. Add hooks, rules, knowledge bases and skills by dropping files in ~/.config/lplug."
+    },
+    {
+      "name": "wiki",
+      "source": "./plugins/wiki",
+      "description": "A shared Obsidian wiki Claude maintains: /wiki:ingest and /wiki:query. Skills only, no install."
+    }
+  ]
+}

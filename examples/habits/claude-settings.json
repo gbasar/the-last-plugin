@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(nmap:*)", "Bash(masscan:*)", "Bash(zmap:*)",
+      "Bash(reg add:*)", "Bash(reg delete:*)", "Bash(reg import:*)", "Bash(regedit:*)",
+      "Bash(setenforce 0:*)"
+    ],
+    "ask": [
+      "Bash(pip install:*)", "Bash(pip3 install:*)", "Bash(npm install:*)", "Bash(npm i:*)",
+      "Bash(cargo install:*)", "Bash(go install:*)",
+      "Bash(curl:*)", "Bash(wget:*)", "Bash(git clone:*)"
+    ]
+  }
+}

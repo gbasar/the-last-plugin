@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs the prebuilt lplug binary for this OS/arch (built by ./build.sh).
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+done
+dir=$(dirname "$self")
+case $(uname -s) in
+  Darwin) os=darwin ;; Linux) os=linux ;; MINGW*|MSYS*|CYGWIN*) os=windows ;; *) os=unknown ;;
+esac
+case $(uname -m) in
+  x86_64|amd64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; *) arch=unknown ;;
+esac
+bin="$dir/lplug-$os-$arch"
+[ "$os" = windows ] && bin="$bin.exe"
+if [ ! -x "$bin" ]; then
+  echo "lplug: no binary for $os/$arch ($bin). Run build.sh in the lplug repo." >&2
+  exit 1
+fi
+exec "$bin" "$@"

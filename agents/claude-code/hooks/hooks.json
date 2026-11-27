@@ -1,0 +1,128 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code SessionStart"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code SessionEnd"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code PreToolUse"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code PostToolUse"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code PostToolUseFailure"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code SubagentStart"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code Notification"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code Stop"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code SubagentStop"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/lplug\" hook --agent claude-code PreCompact"
+          }
+        ]
+      }
+    ]
+  }
+}

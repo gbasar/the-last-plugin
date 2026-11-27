@@ -1,0 +1,435 @@
+#!/usr/bin/env bash
+# Purpose: read the project's Markdown kanban boards (Obsidian Kanban format)
+#          for the agent, and remind it to keep them current.
+# Usage:   kanban view [BOARD] | watch | add "text" | move N COLUMN | edit     (you)
+#          kanban use BOARD | new NAME [column ...] | child NAME | init | list
+#          kanban path | show [BOARD]                                   (agent)
+#          kanban hook-start | hook-prompt | hook-tool | hook-stop      (lplug hooks)
+# Boards:  the active board is, first found: $LPLUG_KANBAN; the board picked
+#          with "kanban use" for this project; KANBAN.md at the repo root.
+#          Any Obsidian Kanban file works. New ad hoc boards go in
+#          $XDG_DATA_HOME/lplug/kanban/. A card too big for one card gets its
+#          own board next to its parent, linked as [[NAME]], nesting any depth.
+#          Needs only bash 3.2+, POSIX awk and sed.
+set -euo pipefail
+
+DEFAULT_COLUMNS=(In Ready Blocked Doing Done)
+BOARD_FILE_NAME=KANBAN.md
+BOARD_MARKER='kanban-plugin:'   # front-matter key that makes a .md file a board
+NEW_BOARD_VALUE=board           # what Obsidian Kanban writes; it also reads the old "basic"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/lplug/kanban"
+MAX_CARDS_PER_COLUMN=10         # longer columns end with "+N more"
+MAX_DONE_CARDS_SHOWN=3          # Done only shows its newest cards
+SKILL_DIR=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)
+RULES_FILE="$SKILL_DIR/RULES.md"
+STATE_DIR="${LPLUG_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lplug}/kanban"
+# One marker pair per session; strip anything that isn't safe in a file name.
+SESSION_ID=$(printf '%s' "${LPLUG_SESSION_ID:-manual}" | tr -c 'A-Za-z0-9_-' '_')
+WORK_MARKER="$STATE_DIR/$SESSION_ID.work"   # exists: files changed since the last board edit
+SEEN_MARKER="$STATE_DIR/$SESSION_ID.seen"   # touched when the agent last saw or wrote a board
+
+# The repo root; outside a repo, the nearest folder up that has a board picked
+# with "kanban use" or a KANBAN.md, so subfolders keep their board; else here.
+project_root() {
+    git rev-parse --show-toplevel 2>/dev/null && return
+    local folder; folder=$(pwd)
+    while [[ -n "$folder" ]]; do
+        if [[ -s "$STATE_DIR/active/$(printf '%s' "$folder" | tr '/' '%')" || -f "$folder/$BOARD_FILE_NAME" ]]; then
+            printf '%s\n' "$folder"; return
+        fi
+        folder=${folder%/*}
+    done
+    pwd
+}
+
+# The "kanban use" choice is kept per project (repo root, else the folder), so
+# the hooks and the agent's own shell commands agree without sharing a session.
+active_pointer_file() {
+    local project_key; project_key=$(project_root | tr '/' '%')
+    printf '%s/active/%s\n' "$STATE_DIR" "$project_key"
+}
+
+absolute_path() {
+    local path=${1/#\~/$HOME}
+    case $path in
+        /*) printf '%s\n' "$path" ;;
+        *)  printf '%s/%s\n' "$(pwd)" "$path" ;;
+    esac
+}
+
+active_board_path() {
+    if [[ -n "${LPLUG_KANBAN:-}" ]]; then absolute_path "$LPLUG_KANBAN"; return; fi
+    local pointer; pointer=$(active_pointer_file)
+    if [[ -s "$pointer" ]]; then cat "$pointer"; return; fi
+    printf '%s/%s\n' "$(project_root)" "$BOARD_FILE_NAME"
+}
+
+# A BOARD argument may be a path ("~/vault/Sprint.md"), or a name ("login",
+# "[[login]]", "login.md") looked up next to the active board, then in the
+# data dir. A name that isn't found yet means the data dir.
+board_path_for() {
+    local name=${1:-}
+    [[ -n "$name" ]] || { active_board_path; return; }
+    case $name in */*|~*) absolute_path "$name"; return ;; esac
+    name=${name#[[}; name=${name%]]}; name=${name%.md}
+    local beside_active; beside_active="$(dirname "$(active_board_path)")/$name.md"
+    if [[ -f "$beside_active" ]]; then printf '%s\n' "$beside_active"; return; fi
+    printf '%s/%s.md\n' "$DATA_DIR" "$name"
+}
+
+is_board_file() { [[ -f "$1" ]] && head -n 5 "$1" | grep --quiet "^$BOARD_MARKER"; }
+
+# Prints a board as the agent should see it: every column with its cards, each
+# card's checklist progress, the open steps of cards in Doing, and only the
+# newest few Done cards.
+summarize_board() {
+    local board=$1
+    printf 'Kanban board: %s\n' "$board"
+    awk -v max_cards="$MAX_CARDS_PER_COLUMN" -v max_done="$MAX_DONE_CARDS_SHOWN" '
+        function close_card() {
+            if (card == "") return
+            line = card
+            if (steps_total > 0) line = line " [" steps_done "/" steps_total "]"
+            cards[++card_count] = line
+            # In Doing, show the steps still open: that is where the work is.
+            if (tolower(column) == "doing") cards[card_count] = line open_steps
+            card = ""; steps_total = 0; steps_done = 0; open_steps = ""
+        }
+        function close_column() {
+            close_card()
+            if (column == "") return
+            limit = (tolower(column) == "done") ? max_done : max_cards
+            printf "\n## %s (%d)\n", column, card_count
+            for (i = 1; i <= card_count && i <= limit; i++) print cards[i]
+            if (card_count > limit) printf "- ... +%d more\n", card_count - limit
+            if (card_count == 0) print "(empty)"
+            card_count = 0
+        }
+        /^(%% kanban:settings|\*\*\*$)/ { exit }        # settings block or archive: no more cards
+        /^## /                    { close_column(); column = substr($0, 4); next }
+        /^- \[[ xX]\] /           { close_card(); if (column != "") card = $0; next }
+        /^[ \t]+- \[[ xX]\] /     {               # a step nested under the card
+            if (card == "") next
+            steps_total++
+            if ($0 ~ /^[ \t]+- \[[xX]\]/) steps_done++
+            else { step = $0; sub(/^[ \t]+/, "", step); open_steps = open_steps "\n    " step }
+        }
+        END                       { close_column() }
+    ' "$board"
+}
+
+# Open cards of the first (intake) column of the main board. The agent'"'"'s own
+# #suggested cards are left out: those wait for the user, not for triage.
+untriaged_cards() {
+    awk '
+        /^(%% kanban:settings|\*\*\*$)/ { exit }        # settings block or archive: no more cards
+        /^## /                { column_number++; next }
+        column_number == 1 && /^- \[ \] / && !/#suggested/ { print }
+    ' "$1"
+}
+
+first_column_name() { sed -n 's/^## //p' "$1" | head -n 1; }
+
+write_new_board() {
+    local board=$1; shift
+    local columns=("$@")
+    [[ ${#columns[@]} -gt 0 ]] || columns=("${DEFAULT_COLUMNS[@]}")
+    mkdir -p "$(dirname "$board")"
+    {
+        printf -- '---\n\n%s %s\n\n---\n' "$BOARD_MARKER" "$NEW_BOARD_VALUE"
+        for column in "${columns[@]}"; do printf '\n## %s\n\n' "$column"; done
+    } > "$board"
+    echo "Created $board with columns: ${columns[*]}"
+}
+
+# ---- terminal use, for when there's no Obsidian ---------------------------
+
+require_board() {
+    local board=$1
+    [[ -f "$board" ]] && return
+    echo "No kanban board at $board. Create one with: kanban init" >&2
+    exit 1
+}
+
+# Prints a board for a person: numbered cards (the numbers "move" takes),
+# checklist steps under each card, colors when the output is a terminal.
+command_view() {
+    local board; board=$(board_path_for "${1:-}")
+    require_board "$board"
+    local bold='' dim='' green='' reset=''
+    if [[ -t 1 ]]; then bold=$'\e[1m' dim=$'\e[2m' green=$'\e[32m' reset=$'\e[0m'; fi
+
+    printf '%s%s%s\n' "$dim" "$board" "$reset"
+    awk -v bold="$bold" -v dim="$dim" -v green="$green" -v reset="$reset" '
+        /^(%% kanban:settings|\*\*\*$)/ { exit }        # settings block or archive: no more cards
+        /^## /                { printf "\n%s%s%s\n", bold, substr($0, 4), reset; next }
+        /^- \[[ xX]\] /       {
+            card_number++
+            done = ($0 ~ /^- \[[xX]\]/)
+            text = substr($0, 7)
+            printf "%3d. %s%s%s\n", card_number, (done ? green "✓ " : "  "), text, (done ? reset : "")
+            next
+        }
+        /^[ \t]+- \[[ xX]\] / {
+            done = ($0 ~ /\[[xX]\]/)
+            step = $0; sub(/^[ \t]+- \[[ xX]\] /, "", step)
+            printf "        %s%s %s%s\n", (done ? green : dim), (done ? "✓" : "·"), step, reset
+        }
+    ' "$board"
+}
+
+# Redraws the board whenever it might have changed. Ctrl-C to stop.
+command_watch() {
+    local refresh_seconds=${KANBAN_WATCH_SECONDS:-2}
+    while true; do
+        clear
+        command_view "${1:-}"
+        printf '\n(refreshing every %ss, Ctrl-C to stop)\n' "$refresh_seconds"
+        sleep "$refresh_seconds"
+    done
+}
+
+# Adds a card to the end of the first column (the intake column).
+command_add() {
+    local text=${1:?usage: kanban add "card text" [BOARD]}
+    local board; board=$(board_path_for "${2:-}")
+    require_board "$board"
+    local temporary_file; temporary_file=$(mktemp)
+    awk -v card="- [ ] $text" '
+        function insert() { if (!inserted) { print card; inserted = 1 } }
+        /^## / { column_number++
+                 if (column_number == 2) { insert(); print "" } }
+        /^(%% kanban:settings|\*\*\*$)/ { insert(); print "" }
+        column_number == 1 && /^$/ && saw_card { pending_blank++; next }
+        { while (pending_blank > 0) { print ""; pending_blank-- } }
+        column_number == 1 && /^- \[/ { saw_card = 1 }
+        { print }
+        END { insert() }
+    ' "$board" > "$temporary_file"
+    cat "$temporary_file" > "$board"   # cat keeps a symlinked board a symlink
+    rm -f "$temporary_file"
+    echo "Added to $(first_column_name "$board"): $text"
+}
+
+# Moves card number N (as numbered by "view") with its steps to a column:
+# to the top of the last column (Done: ticked), otherwise to the end of the
+# column. CARD is the number "view" shows, or a piece of the card's text.
+command_move() {
+    local card=${1:?usage: kanban move CARD COLUMN [BOARD]}
+    local target_column=${2:?usage: kanban move CARD COLUMN [BOARD]}
+    local board; board=$(board_path_for "${3:-}")
+    require_board "$board"
+    local temporary_file; temporary_file=$(mktemp)
+    if ! awk -v wanted="$card" -v target="$target_column" '
+        BEGIN { by_number = (wanted ~ /^[0-9]+$/) }
+        # Read the board into: preamble, columns of blocks, and the trailer.
+        # A block is a card line plus the indented lines under it.
+        in_trailer || /^(%% kanban:settings|\*\*\*$)/ { in_trailer = 1; trailer = trailer $0 "\n"; next }
+        /^## / { columns++; header[columns] = $0; block_count[columns] = 0; next }
+        columns == 0 { preamble = preamble $0 "\n"; next }
+        /^$/ { next }
+        /^[ \t]/ && block_count[columns] > 0 { block[columns, block_count[columns]] = block[columns, block_count[columns]] "\n" $0; next }
+        {
+            if (block_count[columns] == 0 && $0 !~ /^- \[[ xX]\] /) { column_head[columns] = column_head[columns] $0 "\n"; next }
+            block[columns, ++block_count[columns]] = $0
+            if ($0 !~ /^- \[[ xX]\] /) next
+            cards++
+            if (by_number ? (cards == wanted + 0) : (index(tolower($0), tolower(wanted)) > 0)) {
+                matches++
+                if (matches == 1) { from_column = columns; from_block = block_count[columns] }
+                else ambiguous = ambiguous "\n  " $0
+            }
+        }
+        function emit(text) {
+            print text
+            if (text ~ /^- \[[ xX]\] /) emitted_cards++
+        }
+        END {
+            for (c = 1; c <= columns; c++) if (tolower(substr(header[c], 4)) == tolower(target)) to_column = c
+            if (!from_column) { print "no card matching " wanted > "/dev/stderr"; exit 1 }
+            if (ambiguous != "") { print "more than one card matches \"" wanted "\":\n  " substr(block[from_column, from_block], 1, index(block[from_column, from_block] "\n", "\n") - 1) ambiguous > "/dev/stderr"; exit 1 }
+            if (!to_column)   { print "no column named " target > "/dev/stderr"; exit 1 }
+            moving = block[from_column, from_block]
+            to_done = (to_column == columns)
+            sub(/^- \[[ xX]\]/, to_done ? "- [x]" : "- [ ]", moving)
+            printf "%s", preamble
+            for (c = 1; c <= columns; c++) {
+                printf "%s\n\n%s", header[c], column_head[c]
+                printed = 0
+                if (c == to_column && to_done) { emit(moving); new_number = emitted_cards; printed = 1 }
+                for (b = 1; b <= block_count[c]; b++)
+                    if (!(c == from_column && b == from_block)) { emit(block[c, b]); printed = 1 }
+                if (c == to_column && !to_done) { emit(moving); new_number = emitted_cards; printed = 1 }
+                if (printed) print ""
+            }
+            printf "%s", trailer
+            first_line = moving; sub(/\n.*/, "", first_line)
+            print "Moved to " substr(header[to_column], 4) " (now #" new_number "): " substr(first_line, 7) > "/dev/stderr"
+        }
+    ' "$board" > "$temporary_file"; then
+        rm -f "$temporary_file"
+        exit 1
+    fi
+    cat "$temporary_file" > "$board"
+    rm -f "$temporary_file"
+}
+
+command_edit() {
+    local board; board=$(board_path_for "${1:-}")
+    require_board "$board"
+    "${VISUAL:-${EDITOR:-vi}}" "$board"
+}
+
+command_path() { active_board_path; }
+
+command_show() {
+    local board; board=$(board_path_for "${1:-}")
+    if [[ ! -f "$board" ]]; then
+        echo "No kanban board at $board. Create one with: kanban init, kanban new NAME, or kanban use PATH"
+        return
+    fi
+    summarize_board "$board"
+}
+
+# Makes BOARD the active board for this project; "kanban use --none" goes back
+# to the default (KANBAN.md at the repo root).
+command_use() {
+    local wanted=${1:?usage: kanban use BOARD | --none}
+    local pointer; pointer=$(active_pointer_file)
+    if [[ "$wanted" == --none ]]; then
+        rm -f "$pointer"
+        echo "Active board: back to the default, $(active_board_path)"
+        return
+    fi
+    local board; board=$(board_path_for "$wanted")
+    if ! is_board_file "$board"; then
+        echo "Not a kanban board (no '$BOARD_MARKER' front matter): $board" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$pointer")"
+    printf '%s\n' "$board" > "$pointer"
+    echo "Active board for $(project_root): $board"
+}
+
+# KANBAN.md at the repo root, the board a project gets by default.
+command_init() {
+    local board; board="$(project_root)/$BOARD_FILE_NAME"
+    if [[ -e "$board" ]]; then echo "Board already exists, left as is: $board"; return; fi
+    write_new_board "$board" "$@"
+}
+
+# An ad hoc board in the data dir, with your own columns; it becomes active.
+command_new() {
+    local name=${1:?usage: kanban new NAME [column ...]}; shift
+    name=${name%.md}
+    local board="$DATA_DIR/$name.md"
+    if [[ -e "$board" ]]; then echo "Board already exists, left as is: $board"
+    else write_new_board "$board" "$@"; fi
+    command_use "$board"
+}
+
+# A board for one big card, next to the active board so [[NAME]] resolves in
+# Obsidian. The active board stays active.
+command_child() {
+    local name=${1:?usage: kanban child NAME [column ...]}; shift
+    name=${name#[[}; name=${name%]]}; name=${name%.md}
+    local board; board="$(dirname "$(active_board_path)")/$name.md"
+    if [[ -e "$board" ]]; then echo "Board already exists, left as is: $board"
+    else write_new_board "$board" "$@"; fi
+    echo "Link it from the parent card as [[$name]]."
+}
+
+command_list() {
+    local active; active=$(active_board_path)
+    local found=0 file
+    echo "Active: $active"
+    for file in "$DATA_DIR"/*.md "$(dirname "$active")"/*.md; do
+        is_board_file "$file" || continue
+        echo "  $file"; found=$((found + 1))
+    done | sort -u
+    echo "Boards in $DATA_DIR and beside the active board, listed above."
+}
+
+# Session start: the rules and the main board, but only in projects that have a
+# board, so sessions elsewhere pay nothing.
+command_hook_start() {
+    local board; board=$(active_board_path)
+    [[ -f "$board" ]] || exit 0
+    mkdir -p "$STATE_DIR"
+    cat "$RULES_FILE"
+    echo
+    summarize_board "$board"
+    touch "$SEEN_MARKER"
+}
+
+# Each prompt: show the main board again if the user changed it (e.g. in
+# Obsidian), and list intake cards still waiting to be triaged.
+command_hook_prompt() {
+    local board; board=$(active_board_path)
+    [[ -f "$board" ]] || exit 0
+    mkdir -p "$STATE_DIR"
+
+    if [[ ! -e "$SEEN_MARKER" || "$board" -nt "$SEEN_MARKER" ]]; then
+        echo "kanban: the board changed since you last saw it. Current state:"
+        summarize_board "$board"
+        touch "$SEEN_MARKER"
+    fi
+
+    local waiting; waiting=$(untriaged_cards "$board")
+    if [[ -n "$waiting" ]]; then
+        printf 'kanban: new cards in %s, triage them this turn (Ready if clear, broken into steps if big; Blocked with "blocked: <what you need>" if not):\n%s\n' \
+            "$(first_column_name "$board")" "$waiting"
+    fi
+}
+
+# After every file edit: an edit to any board counts as keeping it current;
+# any other edit is work the board may now be behind on.
+command_hook_tool() {
+    [[ -f "$(active_board_path)" ]] || exit 0
+    mkdir -p "$STATE_DIR"
+
+    # The payload is one line of JSON; no jq on many machines, so sed it out.
+    local edited_file
+    edited_file=$(sed -n -E 's/.*"(file_path|notebook_path)" *: *"([^"]*)".*/\2/p' | head -n 1)
+
+    if [[ -n "$edited_file" ]] && is_board_file "$edited_file"; then
+        touch "$SEEN_MARKER"
+        rm -f "$WORK_MARKER"
+    else
+        touch "$WORK_MARKER"
+    fi
+}
+
+# Before the agent stops: if it edited files after its last board edit, send it
+# back once to update the board. Removing the marker first means never a loop.
+command_hook_stop() {
+    [[ -f "$(active_board_path)" && -e "$WORK_MARKER" ]] || exit 0
+    rm -f "$WORK_MARKER"
+    cat <<EOF
+kanban: you changed files but didn't update the board ($(active_board_path)).
+Update it now: tick the steps you finished ("- [x]" under the card), the card
+you're on in Doing (add one if the work has no card), finished cards to Done,
+problems to Blocked with "blocked: <what you need>". If the board really needs
+no change, say so in one line.
+EOF
+}
+
+case ${1:-show} in
+    path)        command_path ;;
+    show)        shift || true; command_show "${1:-}" ;;
+    init)        shift; command_init "$@" ;;
+    new)         shift; command_new "$@" ;;
+    child)       shift; command_child "$@" ;;
+    use)         shift; command_use "$@" ;;
+    list)        command_list ;;
+    view)        shift; command_view "${1:-}" ;;
+    watch)       shift; command_watch "${1:-}" ;;
+    add)         shift; command_add "$@" ;;
+    move)        shift; command_move "$@" ;;
+    edit)        shift; command_edit "${1:-}" ;;
+    hook-start)  command_hook_start ;;
+    hook-prompt) command_hook_prompt ;;
+    hook-tool)   command_hook_tool ;;
+    hook-stop)   command_hook_stop ;;
+    *) sed -n "4,7p" "$0" | sed "s/^# \{0,1\}//" >&2; exit 1 ;;
+esac

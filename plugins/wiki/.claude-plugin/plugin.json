@@ -1,0 +1,8 @@
+{
+  "name": "wiki",
+  "version": "0.1.0",
+  "description": "A shared Obsidian wiki that Claude maintains: /wiki:ingest distills docs, folders, URLs or this conversation into linked pages; /wiki:query answers from it with [[wikilink]] citations.",
+  "license": "MIT",
+  "keywords": ["obsidian", "wiki", "knowledge-base", "okf"],
+  "skills": "./skills/"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "the-last-plugin",
+  "version": "0.3.0",
+  "description": "lplug: one dispatcher for every hook event. Add hooks by dropping files in ~/.config/lplug - no new plugins needed."
+}
